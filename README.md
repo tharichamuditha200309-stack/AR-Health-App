@@ -330,3 +330,6 @@ state/                      simulator state (hidden truth) - not in the DB
 output/                     hidden profiles, ground truth, ML exports
 logs/                       ar_gen.log
 ```
+#   A R - H e a l t h - A p p  
+ #   A R - H e a l t h - A p p  
+ 
