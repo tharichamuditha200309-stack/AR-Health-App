@@ -1,28 +1,44 @@
-# LECO Auto Recloser Health: real-time data getter, V1–V42, Health Index, 3D dashboard and ML
+# LECO Auto Recloser Health
 
-Every 15 minutes this project:
+Real-time recloser health monitoring for the LECO fleet, including V1–V42 calculation, Health Index (HI), 3D dashboard, and ML-based failure prediction.
 
-1. **Collects** one interval of raw data per auto recloser (AR), shaped like a real NOJA OSM15-310 / OSM27-310 with an RC-10/RC-15 cubicle (NOJA-5002-14 manual): telemetry poll, Close/Open log, fault and event logs, battery tests, comms events, lifetime counters and maintenance records.
-2. **Calculates the final data**: the 42 Excel variables V1–V42.
-3. **Calculates the Health Index (HI)** with a mathematical model, giving 0–100, GOOD / FAIR / POOR / CRITICAL and healthy / not healthy.
-4. **Stores** everything in MySQL / MariaDB (or SQLite) and can export an ML-ready dataset with failure labels.
+## Overview
 
-The fleet is **100 NOJA reclosers across 7 LECO branches**: Negombo, Kelaniya, Kotte, Nugegoda, Moratuwa, Kalutara and Galle. The branches are set in `config.yaml → areas`.
+Every 15 minutes, this project:
 
-On top of that:
-- a **futuristic 3D dashboard** (`python main.py dashboard`) shows the fleet live;
-- **maintenance resets** restart the repaired part's Health Index;
-- a **machine-learning model trained in Google Colab** adds a failure-risk prediction next to the HI every 15 minutes (`docs/ML_COLAB_GUIDE.md`).
+1. Collects one interval of raw data per auto recloser (AR).
+2. Calculates the final 42 Excel variables: V1–V42.
+3. Calculates a Health Index (HI) from 0–100.
+4. Classifies each asset as GOOD / FAIR / POOR / CRITICAL.
+5. Stores the data in MySQL / MariaDB (or SQLite).
+6. Exports an ML-ready dataset with failure labels.
 
-The data source is a deterministic, physics-based simulator of each recloser (`SimulatedNojaSource`). A real source (DNP3 / SCADA historian / CMS log import) can replace it later through the `RecloserSource` interface (`ar_gen/sources/base.py`) without changing the variable or HI code.
+The fleet is 100 NOJA reclosers across 7 LECO branches:
+- Negombo
+- Kelaniya
+- Kotte
+- Nugegoda
+- Moratuwa
+- Kalutara
+- Galle
+
+These branch settings are configured in `config.yaml` under `areas`.
+
+Additional features:
+- Futuristic 3D dashboard via `python main.py dashboard`
+- Maintenance resets that restart the repaired part’s Health Index
+- Machine-learning risk prediction next to the HI every 15 minutes
+- A deterministic, physics-based simulator (`SimulatedNojaSource`) as the default data source
+
+## Documentation
 
 - Design: [docs/design/2026-10-06-ar-phase1-design.md](docs/design/2026-10-06-ar-phase1-design.md)
-- Every table, column and formula: [DATA_DICTIONARY.md](DATA_DICTIONARY.md)
-- Train the ML model in Google Colab: [docs/ML_COLAB_GUIDE.md](docs/ML_COLAB_GUIDE.md)
+- Data dictionary: [DATA_DICTIONARY.md](DATA_DICTIONARY.md)
+- ML training guide: [docs/ML_COLAB_GUIDE.md](docs/ML_COLAB_GUIDE.md)
 
 ---
 
-## 1. Install
+## 1. Installation
 
 Requires Python 3.11+ (tested with 3.13).
 
@@ -31,7 +47,11 @@ cd "D:\AR Preventive Analyze"
 python -m pip install -r requirements.txt
 ```
 
-## 2. Database (MariaDB 10.6 / MySQL 8)
+---
+
+## 2. Database setup
+
+### MariaDB 10.6 / MySQL 8
 
 In HeidiSQL, connected as root, run:
 
@@ -44,118 +64,155 @@ GRANT ALL PRIVILEGES ON ar_maintenance.* TO 'ar_gen'@'127.0.0.1';
 FLUSH PRIVILEGES;
 ```
 
-Then copy `.env.example` to `.env` and put your password in it. `.env` is never committed.
+Then copy `.env.example` to `.env` and add your password:
 
-```
+```env
 DATABASE_URL=mysql+pymysql://ar_gen:choose-a-password@127.0.0.1:3306/ar_maintenance
 ```
 
-If the password contains `@ : / ? # %`, URL-encode those characters (for example `@` becomes `%40`). Without a `.env` the project uses SQLite at `data/ar_maintenance.sqlite`.
+If the password contains special characters such as `@ : / ? # %`, URL-encode them first.
+
+If no `.env` file exists, the project falls back to SQLite at:
+
+```text
+data/ar_maintenance.sqlite
+```
+
+---
 
 ## 3. Quick start
 
 ```powershell
 python main.py init-db          # create tables and indexes
-python main.py seed --days 30   # 100 LECO reclosers, 30 days of history (hidden profiles -> output/asset_profiles.csv)
-python main.py backfill         # raw -> V1-V42 -> HI -> daily summary  (about 8 min for 30 days)
-python main.py validate         # consistency checks; must print "Validation PASSED"
-python main.py status           # latest HI of every recloser
-python main.py scheduler        # keep running: updates every 15 min at :00 :15 :30 :45
-python main.py dashboard        # second terminal: the 3D command centre at http://localhost:8501
+python main.py seed --days 30   # create 100 LECO reclosers with 30 days of history
+python main.py backfill         # raw -> V1-V42 -> HI -> daily summary
+python main.py validate         # must print "Validation PASSED"
+python main.py status           # latest HI for every recloser
+python main.py scheduler        # keep running; updates every 15 min
+python main.py dashboard        # second terminal; opens the 3D dashboard
 ```
 
-The live database keeps recent data only. Old history for ML training is produced separately with
-`generate-ml-data` (no database), and `prune-history --keep-days 30` trims an existing database after a backup.
+### Fast trial
 
-For a fast trial, run `python main.py seed --assets 3 --days 7` followed by `python main.py backfill`.
+```powershell
+python main.py seed --assets 3 --days 7
+python main.py backfill
+```
 
-### Data already generated into SQLite, now moving to MySQL
+### Moving from SQLite to MySQL
 
-Create `.env` (section 2), then run:
+Create `.env`, then run:
 
 ```powershell
 python main.py copy-db --from sqlite:///data/ar_maintenance.sqlite
 python main.py validate
 ```
 
-Everything continues from there. If the configured database does not contain the seeded fleet, the getter refuses to run rather than write orphan rows. You can also regenerate the identical dataset directly in MySQL with `init-db --reset`, `seed --start <same first day>` and `backfill`, because generation is deterministic.
+Everything continues from there. If the configured database does not contain the seeded fleet, the getter refuses to run instead of writing orphan rows.
+
+The live database keeps recent data only. Old history for ML training is generated separately with `generate-ml-data`, and `prune-history --keep-days 30` trims an existing database after backup.
+
+---
 
 ## 4. Commands
 
-| command | what it does |
+| Command | Description |
 |---|---|
-| `init-db [--reset] [--yes]` | create the database, tables and indexes. `--reset` drops everything and deletes the simulator state |
-| `seed [--assets N] [--start YYYY-MM-DD \| --days N]` | create the fleet and its hidden degradation profiles |
-| `backfill [--end DATE] [--no-compute]` | generate history up to now (or `--end`), committed per day, then V1–V42 and HI |
-| `run-once` | collect the interval(s) that just ended, then update V1–V42 and HI. Missed intervals are filled automatically |
-| `scheduler` | run-once at :00, :15, :30 and :45 (APScheduler); catches up on start |
-| `status` | latest HI, class, healthy flag, worst variables and factor scores per recloser |
-| `dashboard [--port 8501] [--lan]` | open the **3D recloser health map** in your browser (section 5b). It listens on this PC only; `--lan` also allows other computers on your network, and anyone there can save resets |
-| `maintenance-done --asset AR-008 --part SWITCHING [--part ...] [--at "YYYY-MM-DD HH:MM"] [--note ...]` | record maintenance and reset the repaired part's Health Index, then recalculate. Parts: BATTERY, SWITCHING, COMMS, CONTROLLER, ALL; `--at` is local time, default the latest interval; any time up to now is accepted |
-| `ml-status` | shows whether a trained ML model is installed in `models/` (version, alarm level, test results) |
-| `ml-score [--start --end]` | scores stored V1–V42 rows with the installed model (once after installing a model; the collector then scores every 15 min) |
-| `prune-history [--keep-days 30] [--backup FILE \| --no-backup]` | deletes older data, after a full backup by default, and keeps what the 30-day calculations still need |
-| `set-locations --csv file.csv` | load real GPS positions (`asset_id,latitude,longitude`), replacing the simulated ones |
-| `validate` | gaps, ranges, counters vs operations, fault ↔ operation sequences, alarm pairing, repairs, coverage, and HI before failures |
-| `export-dataset [--out DIR]` | ML dataset `output/ml/ar_ml_dataset.csv.gz` with labels, plus ground truth and profiles |
-| `compute-variables [--start --end]` | recompute V1–V42 and HI for a range |
-| `compute-hi [--start --end]` | re-score stored variables after changing HI weights or thresholds in `config.yaml` |
-| `copy-db --from URL` | copy all data from another database into `DATABASE_URL` |
-| `generate-ml-data [--assets 100] [--days 730] [--seed N]` | generate an ML training dataset **directly, without the database**: a separate simulated fleet, written to `output/ml_generated/` |
+| `init-db [--reset] [--yes]` | Create the database, tables, and indexes. `--reset` drops everything and clears simulator state. |
+| `seed [--assets N] [--start YYYY-MM-DD \| --days N]` | Create the fleet and hidden degradation profiles. |
+| `backfill [--end DATE] [--no-compute]` | Generate history up to now (or `--end`), committed per day, then calculate V1–V42 and HI. |
+| `run-once` | Collect the newest interval, then update V1–V42 and HI. Missed intervals are filled automatically. |
+| `scheduler` | Run `run-once` at :00, :15, :30 and :45 (APScheduler). |
+| `status` | Show the latest HI, class, health flag, worst variables, and factor scores per recloser. |
+| `dashboard [--port 8501] [--lan]` | Open the 3D recloser health map in your browser. |
+| `maintenance-done --asset AR-008 --part SWITCHING [--part ...] [--at "YYYY-MM-DD HH:MM"] [--note ...]` | Record maintenance and reset the repaired part’s HI. |
+| `ml-status` | Show whether a trained ML model is installed in `models/`. |
+| `ml-score [--start --end]` | Score stored V1–V42 rows with the installed model. |
+| `prune-history [--keep-days 30] [--backup FILE \| --no-backup]` | Delete older data after a backup, keeping only what the 30-day calculations still need. |
+| `set-locations --csv file.csv` | Load real GPS positions (`asset_id,latitude,longitude`) replacing the simulated ones. |
+| `validate` | Run checks for gaps, ranges, counters, fault sequence logic, alarms, repairs, coverage, and HI before failures. |
+| `export-dataset [--out DIR]` | Export an ML dataset with labels, ground truth, and profiles. |
+| `compute-variables [--start --end]` | Recompute V1–V42 and HI for a range. |
+| `compute-hi [--start --end]` | Re-score stored variables after changing HI weights or thresholds in `config.yaml`. |
+| `copy-db --from URL` | Copy all data from another database into `DATABASE_URL`. |
+| `generate-ml-data [--assets 100] [--days 730] [--seed N]` | Generate an ML training dataset directly, without the database. |
 
-Logs go to the console and to `logs/ar_gen.log` (rotating). A lock file (`state/ar_gen.lock`) stops two runs from overlapping, for example the scheduler and Task Scheduler.
+Logs go to the console and to `logs/ar_gen.log` (rotating). A lock file (`state/ar_gen.lock`) prevents overlapping runs, such as scheduler + task scheduler.
+
+---
 
 ## 5. Real-time operation every 15 minutes
 
-**Option A: keep `python main.py scheduler` running** in a terminal or as a service.
+### Option A: Keep `python main.py scheduler` running
 
-**Option B: Windows Task Scheduler running `run-once`.** Run this once in an elevated PowerShell:
+Run this in a terminal or as a service.
+
+### Option B: Windows Task Scheduler
+
+Run this once in an elevated PowerShell:
 
 ```powershell
 schtasks /Create /TN "AR data getter" /SC MINUTE /MO 15 /ST 00:00 /F `
   /TR "\"C:\Python313\python.exe\" \"D:\AR Preventive Analyze\main.py\" run-once"
 ```
 
-- In the Task Scheduler GUI, open the task's properties and set **Run whether user is logged on or not** and **Do not start a new instance** (Settings tab).
-- Check that it works: `schtasks /Run /TN "AR data getter"`, then look at `logs\ar_gen.log`.
-- Remove the task with `schtasks /Delete /TN "AR data getter" /F`.
+Then in the Task Scheduler GUI:
+- Set **Run whether user is logged on or not**
+- Set **Do not start a new instance**
 
-Use `where python` to find your Python path. The working directory does not matter; paths resolve from the project folder.
+Test it with:
 
-If the PC was off, the next run fills every missed interval, so the data stays continuous.
+```powershell
+schtasks /Run /TN "AR data getter"
+```
 
-## 5b. 3D dashboard and resetting the HI after maintenance
+Then check `logs\ar_gen.log`.
+
+Remove the task with:
+
+```powershell
+schtasks /Delete /TN "AR data getter" /F
+```
+
+Use `where python` to find your Python path. The working directory does not matter because paths resolve from the project folder.
+
+If the machine was off, the next run fills every missed interval, keeping the data continuous.
+
+---
+
+## 5b. 3D dashboard and maintenance reset
 
 ```powershell
 python main.py dashboard          # opens http://localhost:8501
 ```
 
-**What the page shows:**
-- **A 3D map of Sri Lanka.** Each recloser is a column:
-  - **height = risk (100 − HI)**, so problem reclosers stand out;
-  - **colour = status**, in this priority order:
+### What the page shows
 
-    | Status | Colour | Meaning |
-    |---|---|---|
-    | OFFLINE | grey | no data for 60 min |
-    | FAULTY | dark red | failure waiting for repair |
-    | LOCKOUT | purple | switch locked out after a fault |
-    | CRITICAL | red | HI < 40 |
-    | POOR | orange | HI 40–60 |
-    | FAIR | yellow | HI 60–80 |
-    | GOOD | green | HI ≥ 80 |
+- A 3D map of Sri Lanka. Each recloser is shown as a column.
+- Column height = risk = `100 - HI`.
+- Column colour = status, ordered by priority:
 
-  - Hovering over a column shows the HI, worst variables, battery, AC, comms and switch state.
-  - Thin lines join the reclosers on the same feeder.
-- **Above the map:** one count tile per status. The page refreshes every 60 s.
-- **Below the map:** the fleet table, worst first.
-- **Detail panel** for the chosen recloser:
-  - the HI over the last 30 days, with the **daily average**;
-  - the factor scores;
-  - recent failures, repairs, resets and lockouts;
-  - the **Maintenance done** form.
+| Status | Colour | Meaning |
+|---|---|---|
+| OFFLINE | grey | no data for 60 min |
+| FAULTY | dark red | failure waiting for repair |
+| LOCKOUT | purple | switch locked out after a fault |
+| CRITICAL | red | HI < 40 |
+| POOR | orange | HI 40–60 |
+| FAIR | yellow | HI 60–80 |
+| GOOD | green | HI ≥ 80 |
 
-**Maintenance done = HI reset of the repaired part.** From the maintenance time onward, events from before the repair stop counting for that part. Everything else still counts. The normal 15-minute calculation then continues, so if the problem is really still there the HI drops again.
+Other dashboard details:
+- Hovering over a column shows HI, worst variables, battery, AC, comms, and switch state.
+- Thin lines join reclosers on the same feeder.
+- A tile count is shown above the map for each status.
+- The table below the map lists the fleet, worst first.
+- A detail panel shows the chosen recloser’s recent HI trend, factor scores, and event history.
+- The **Maintenance done** form allows resets after repair.
+
+### Maintenance done = HI reset of the repaired part
+
+From the maintenance time onward, events that occurred before the repair stop counting for that specific part. Everything else still counts.
 
 | Part | Variables that restart |
 |---|---|
@@ -165,13 +222,23 @@ python main.py dashboard          # opens http://localhost:8501
 | Controller | V33, V34 |
 | Any reset | V39 days since maintenance |
 
-- **Never reset:** faults (V12–V20), AC supply (V5, V10), age and environment.
-- **Automatic resets:** every CORRECTIVE repair in `maintenance_log` resets its part.
-- **Manual resets:** the dashboard form or `maintenance-done` adds a row to `hi_reset_log` and recalculates from that moment, waiting for the collector if it is busy.
+Do not reset:
+- faults (`V12–V20`)
+- AC supply (`V5, V10`)
+- age and environment values
 
-**Map positions:** reclosers are placed along their feeders in the 5 areas (`asset_location`, source SIMULATED). Load real positions with `python main.py set-locations --csv gps.csv`, where the CSV has the columns `asset_id,latitude,longitude`.
+Automatic resets:
+- every **CORRECTIVE** repair in `maintenance_log` resets its part
 
-The map background comes from an online map service, so the browser needs internet.
+Manual resets:
+- the dashboard form or `maintenance-done` adds a row to `hi_reset_log`
+- recalculation starts from that moment, waiting for the collector if it is busy
+
+**Map positions:** reclosers are placed along their feeders in the 5 areas (`asset_location`, source = `SIMULATED`). Load real positions with `python main.py set-locations --csv gps.csv`.
+
+The map background comes from an online map service, so the browser needs internet access.
+
+---
 
 ## 6. HeidiSQL queries
 
@@ -219,82 +286,103 @@ FROM co_operations o WHERE o.fault_id = 100 ORDER BY o.ts;
 SELECT ts, asset_id, component, maint_type, description, details FROM maintenance_log ORDER BY ts;
 ```
 
+---
+
 ## 7. ML dataset for Phase 2
 
 ```powershell
 python main.py export-dataset
 ```
 
-**More training data without the database:**
+### More training data without the database
 
 ```powershell
 python main.py generate-ml-data --assets 100 --days 730
 ```
 
 This simulates a separate fleet in memory (seed = config seed + 1, so it is independent of the live reclosers) and writes the same columns as `export-dataset` to `output/ml_generated/`:
-- `ar_ml_dataset.csv.gz`: every 15 min;
-- `ar_ml_dataset_hourly.csv.gz`: hourly, smaller, best for Colab;
-- the ground truth and profiles files.
+- `ar_ml_dataset.csv.gz`: every 15 minutes
+- `ar_ml_dataset_hourly.csv.gz`: hourly, smaller, and best for Colab
+- the ground truth and profiles files
 
 Nothing is written to the database or the live simulator state. A test checks that it produces exactly the same rows as the database route.
 
-**Training in Google Colab (recommended):** `notebooks/AR_ML_Colab.ipynb`, with step-by-step instructions in **[docs/ML_COLAB_GUIDE.md](docs/ML_COLAB_GUIDE.md)**.
+### Training in Google Colab (recommended)
+
+`notebooks/AR_ML_Colab.ipynb`, with step-by-step instructions in [docs/ML_COLAB_GUIDE.md](docs/ML_COLAB_GUIDE.md).
 
 The notebook:
-- tunes LightGBM with Optuna;
-- calibrates the probabilities;
-- chooses the alarm level by a false-alarm budget;
-- compares ML with the HI, explains predictions with SHAP;
-- adds a "which part will fail" model;
-- exports `ar_ml_model.zip`.
+- tunes LightGBM with Optuna
+- calibrates the probabilities
+- chooses the alarm level based on a false-alarm budget
+- compares ML with the HI
+- explains predictions with SHAP
+- adds a model for “which part will fail”
+- exports `ar_ml_model.zip`
 
-Unzip it into `models/` and run `python main.py ml-score` (it scores all stored data; `--start YYYY-MM-DD` limits it). The collector then stores the ML risk every 15 minutes (`ar_ml_prediction_15min`) together with a daily HI-vs-ML summary (`ar_daily_summary`), and the dashboard shows both.
+Unzip it into `models/` and run `python main.py ml-score` (it scores all stored data; `--start YYYY-MM-DD` limits it). The collector then stores the ML risk every 15 minutes in `ar_ml_prediction_15min`.
 
-The notebook embeds the project's feature code (`ar_gen/ml_features.py`), so training and live scoring always build the same inputs.
+The notebook embeds the project’s feature code (`ar_gen/ml_features.py`), so training and live scoring always build the same inputs.
 
-The older notebook `notebooks/AR_failure_prediction.ipynb` (with its `_results` copy) is a simpler first version, kept for reference.
+The older notebook `notebooks/AR_failure_prediction.ipynb` remains for reference.
 
 This writes the following files to `output/ml/`:
-- `ar_ml_dataset.csv.gz`: one row per AR per 15 min: v01–v42, s01–s42, factor scores, HI and class, plus the labels `failure_next_7d`, `failure_next_30d`, `next_failure_component`, `days_to_next_failure`, `failed_now` and `censored_7d/30d`. Exclude censored rows when training.
-- `ar_ml_ground_truth.csv.gz`: hidden daily truth (true battery SOH, mechanism / comms / controller degradation). Use it only for evaluation.
-- `ar_ml_asset_profiles.csv`: the hidden profile of each AR.
+- `ar_ml_dataset.csv.gz`
+- `ar_ml_ground_truth.csv.gz`
+- `ar_ml_asset_profiles.csv`
 
 Load it in a notebook:
 
 ```python
 import pandas as pd
+
 df = pd.read_csv("ar_ml_dataset.csv.gz", parse_dates=["ts"])
 train = df[~df["censored_30d"] & ~df["failed_now"]]
 X = train.filter(regex=r"^v\d\d_").drop(columns=["v42_weather"]).join(pd.get_dummies(train["v42_weather"]))
 y = train["failure_next_30d"]
 ```
 
-To avoid leakage, split train and test by **asset** or by **time**, not at random.
+To avoid leakage, split train and test by asset or by time, not at random.
+
+---
 
 ## 8. Configuration
 
 All settings are in `config.yaml`:
-- seed and fleet size;
-- climate, load, outages;
-- battery and UPS, protection, comms, controller and maintenance rates;
-- V1–V42 windows;
-- HI weights, thresholds, caps and classes.
+- seed and fleet size
+- climate, load, outages
+- battery and UPS, protection, comms, controller, and maintenance rates
+- V1–V42 windows
+- HI weights, thresholds, caps, and classes
 
-Environment variables override `DATABASE_URL`, `AR_CONFIG`, `AR_STATE_DIR`, `AR_OUTPUT_DIR` and `AR_LOG_DIR`, which suits cloud or container runs.
+Environment variables override `DATABASE_URL`, `AR_CONFIG`, `AR_STATE_DIR`, `AR_OUTPUT_DIR`, and `AR_LOG_DIR`, making cloud/container runs easier.
 
-- Changing **HI** settings: run `python main.py compute-hi`.
-- Changing **variable** windows: run `python main.py compute-variables`.
-- Changing **simulation** settings: affects only data generated from then on; the log warns about it. For a clean dataset, run `init-db --reset`, then `seed` and `backfill`.
+- Changing HI settings: run `python main.py compute-hi`
+- Changing variable windows: run `python main.py compute-variables`
+- Changing simulation settings affects only data generated from then on; the log warns about it
+
+For a clean dataset:
+
+```powershell
+python main.py init-db --reset
+python main.py seed
+python main.py backfill
+```
+
+---
 
 ## 9. How realistic the data is, and its limits
 
-- **Physics-based and deterministic.** Battery capacity fades with temperature-weighted age and cycling; internal resistance is R0 / SOH^2.5; the UPS follows the manual's thresholds (§4.8). Mechanism wear lengthens opening and closing times and causes Trip/Close Request Fail. Contact wear follows the manual's breaking-duty curve (§2.1.4). Weather drives faults, outages and comms fades.
-- **Failures and repairs.** Hidden thresholds generate failures; corrective maintenance follows 1–21 days later (new battery, OSM tank swap with counter reset, modem or module replacement). Annual preventive inspections happen as well.
-- **The same seed and config give identical data.** One long backfill equals thousands of 15-minute runs. Crash recovery deletes partially written rows and regenerates them identically.
-- **Telemetry is a poll at the interval end** (instantaneous values). Short events between polls appear in the event logs, not in telemetry.
-- **Faults that start just before a poll** are written when they finish, possibly one interval later. Real-time V-values for that interval can therefore differ slightly from a later `compute-variables`.
-- **Variables raw RC data cannot give directly:** V3 (estimated SOH), V12 (lightning proxy), V31 (two scales), V35 (needs the release table) and V36 (external RS485 device). See DATA_DICTIONARY.md, notes A–E.
-- **This is simulated data.** Use it to build and test the pipeline and ML workflow; validate any model on real recloser data before trusting it.
+- Physics-based and deterministic.
+- Battery capacity fades with temperature-weighted age and cycling; internal resistance is R0 / SOH^2.5.
+- Hidden thresholds generate failures; corrective maintenance follows 1–21 days later.
+- The same seed and config give identical data; crash recovery regenerates any partially written rows identically.
+- Telemetry is taken at the interval end; short events between polls appear in the event logs, not in telemetry.
+- Faults that start just before a poll may be written when they finish, possibly one interval later.
+- Variables raw RC data cannot directly provide: V3, V12, V31, V35, and V36.
+- This is simulated data. Use it to build and test the pipeline and ML workflow; validate any model on real recloser data before trusting it.
+
+---
 
 ## 10. Tests
 
@@ -303,17 +391,19 @@ python -m pytest
 ```
 
 The tests cover:
-- config;
-- physics (battery, contact wear, protection timing);
-- database schema;
-- the HI model;
-- the simulator: telemetry ranges, fault ↔ operation consistency, counters vs logged operations, alarm pairing, battery failure and repair, determinism, split run = single run;
-- V1–V42 (each variable, no look-ahead, incremental = full);
-- the end-to-end pipeline: validate passes, idempotent re-run, interval-by-interval = backfill, crash recovery, copy-db.
+- config
+- physics (battery, contact wear, protection timing)
+- database schema
+- the HI model
+- the simulator: telemetry ranges, fault ↔ operation consistency, counters vs logged operations, alarm pairing, battery failure and repair, determinism, split run vs single run
+- V1–V42 (each variable, no look-ahead, incremental = full)
+- end-to-end pipeline: validation passes, idempotent re-run, interval-by-interval = backfill, crash recovery, copy-db
+
+---
 
 ## 11. Project layout
 
-```
+```text
 main.py                     CLI entry point
 config.yaml                 every tunable value
 ar_gen/
@@ -321,16 +411,18 @@ ar_gen/
   sources/                  RecloserSource interface + SimulatedNojaSource
   sim/                      simulator: fleet, environment, load, UPS/battery, protection, switching,
                             comms, controller, maintenance, engine
-  variables.py              V1-V42 calculator (pure pandas/numpy)
+  variables.py              V1-V42 calculation
   health_index.py           HI mathematical model
-  dataset.py, validate.py   ML export, data validation
+  dataset.py, validate.py   ML export and validation
   db/                       schema, engine, reader, writer
 tests/                      pytest suite
 state/                      simulator state (hidden truth) - not in the DB
 output/                     hidden profiles, ground truth, ML exports
 logs/                       ar_gen.log
 ```
-#   A R - H e a l t h - A p p  
- #   A R - H e a l t h - A p p  
- #   A R - H e a l t h - A p p  
- 
+
+---
+
+## Final summary
+
+This project is a complete auto-recloser health monitoring and predictive maintenance pipeline. It simulates 100 reclosers across seven LECO branches, calculates 42 health variables and a Health Index, stores everything in a database, visualizes the fleet in 3D, supports maintenance resets, and exports ML-ready datasets for future failure prediction.
